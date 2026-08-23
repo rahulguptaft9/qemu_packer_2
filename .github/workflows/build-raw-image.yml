@@ -62,19 +62,34 @@ jobs:
           version: latest
 
       - name: Download Ubuntu Desktop ISO and verify checksum
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+      
+          ISO_VERSION="24.04.4"
+          ISO_NAME="ubuntu-${ISO_VERSION}-desktop-amd64.iso"
+          RELEASE_BASE_URL="https://releases.ubuntu.com/releases/${ISO_VERSION}"
+      
           mkdir -p iso
-
-          curl -L --fail --retry 5 --retry-delay 10 -o "iso/${ISO_NAME}" "${ISO_URL}"
-          curl -L --fail --retry 5 --retry-delay 10 -o iso/SHA256SUMS "${SHA256SUMS_URL}"
-
-          grep " ${ISO_NAME}$" iso/SHA256SUMS > iso/SHA256SUMS.selected
-          (cd iso && sha256sum -c SHA256SUMS.selected)
-
-          ISO_SHA256="$(awk '{print $1}' iso/SHA256SUMS.selected)"
-          echo "ISO_SHA256=${ISO_SHA256}" >> "$GITHUB_ENV"
-          echo "Verified ISO sha256:${ISO_SHA256}"
+      
+          curl -L --fail --retry 5 --retry-delay 5 \
+            -o "iso/${ISO_NAME}" \
+            "${RELEASE_BASE_URL}/${ISO_NAME}"
+      
+          curl -L --fail --retry 5 --retry-delay 5 \
+            -o "iso/SHA256SUMS" \
+            "${RELEASE_BASE_URL}/SHA256SUMS"
+      
+          cd iso
+      
+          echo "Looking for checksum line for ${ISO_NAME}"
+          CHECKSUM_LINE="$(grep -F "*${ISO_NAME}" SHA256SUMS)"
+      
+          echo "${CHECKSUM_LINE}"
+      
+          echo "${CHECKSUM_LINE}" | sha256sum -c -
+      
+          ISO_SHA256="$(echo "${CHECKSUM_LINE}" | awk '{print $1}')"
 
       - name: Show repository structure
         run: |
