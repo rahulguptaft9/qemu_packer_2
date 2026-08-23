@@ -1,0 +1,142 @@
+name: Build Ubuntu Desktop Raw Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Ubuntu Desktop raw image with Packer and QEMU
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      IMAGE_NAME: applied-timeclock-ubuntu-24.04-desktop
+      ISO_VERSION: 24.04.4
+      ISO_NAME: ubuntu-24.04.4-desktop-amd64.iso
+      ISO_URL: https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-desktop-amd64.iso
+      SHA256SUMS_URL: https://releases.ubuntu.com/24.04.4/SHA256SUMS
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-kvm \
+            qemu-utils \
+            ovmf \
+            xz-utils \
+            curl \
+            ca-certificates \
+            gnupg
+
+          echo "Available OVMF firmware files:"
+          ls -lah /usr/share/OVMF || true
+          test -f /usr/share/OVMF/OVMF_CODE_4M.fd
+          test -f /usr/share/OVMF/OVMF_VARS_4M.fd
+
+      - name: Enable KVM access on runner
+        run: |
+          set -euo pipefail
+          if [ ! -e /dev/kvm ]; then
+            echo "ERROR: /dev/kvm is not available on this runner."
+            echo "Use a runner with KVM support, or change accelerator from kvm to tcg for slow emulation."
+            exit 1
+          fi
+
+          sudo chmod 666 /dev/kvm
+          ls -lah /dev/kvm
+
+      - name: Install Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
+
+      - name: Download Ubuntu Desktop ISO and verify checksum
+        run: |
+          set -euo pipefail
+          mkdir -p iso
+
+          curl -L --fail --retry 5 --retry-delay 10 -o "iso/${ISO_NAME}" "${ISO_URL}"
+          curl -L --fail --retry 5 --retry-delay 10 -o iso/SHA256SUMS "${SHA256SUMS_URL}"
+
+          grep " ${ISO_NAME}$" iso/SHA256SUMS > iso/SHA256SUMS.selected
+          (cd iso && sha256sum -c SHA256SUMS.selected)
+
+          ISO_SHA256="$(awk '{print $1}' iso/SHA256SUMS.selected)"
+          echo "ISO_SHA256=${ISO_SHA256}" >> "$GITHUB_ENV"
+          echo "Verified ISO sha256:${ISO_SHA256}"
+
+      - name: Show repository structure
+        run: |
+          set -euo pipefail
+          find . -maxdepth 4 -type f | sort
+
+      - name: Initialize Packer
+        run: |
+          set -euo pipefail
+          packer init packer/ubuntu-24.04.pkr.hcl
+
+      - name: Validate Packer template
+        run: |
+          set -euo pipefail
+          packer validate \
+            -var "image_name=${IMAGE_NAME}" \
+            -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
+            -var "iso_checksum=sha256:${ISO_SHA256}" \
+            packer/ubuntu-24.04.pkr.hcl
+
+      - name: Build QCOW2 image
+        run: |
+          set -euo pipefail
+          PACKER_LOG=1 packer build \
+            -var "image_name=${IMAGE_NAME}" \
+            -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
+            -var "iso_checksum=sha256:${ISO_SHA256}" \
+            packer/ubuntu-24.04.pkr.hcl
+
+      - name: Convert QCOW2 to raw
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          QCOW2_PATH="output/${IMAGE_NAME}/${IMAGE_NAME}.qcow2"
+          RAW_PATH="dist/${IMAGE_NAME}.raw"
+
+          test -f "${QCOW2_PATH}"
+          qemu-img info "${QCOW2_PATH}"
+          qemu-img convert -p -O raw "${QCOW2_PATH}" "${RAW_PATH}"
+          qemu-img info "${RAW_PATH}"
+
+      - name: Compress raw image
+        run: |
+          set -euo pipefail
+          RAW_PATH="dist/${IMAGE_NAME}.raw"
+          COMPRESSED_PATH="${RAW_PATH}.xz"
+
+          test -f "${RAW_PATH}"
+          xz -T0 -9 -v "${RAW_PATH}"
+          test -f "${COMPRESSED_PATH}"
+
+          ls -lh dist
+          sha256sum "${COMPRESSED_PATH}" > "${COMPRESSED_PATH}.sha256"
+          cat "${COMPRESSED_PATH}.sha256"
+
+      - name: Upload compressed raw image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IMAGE_NAME }}-raw-xz
+          path: |
+            dist/${{ env.IMAGE_NAME }}.raw.xz
+            dist/${{ env.IMAGE_NAME }}.raw.xz.sha256
+          retention-days: 7
+          compression-level: 0
