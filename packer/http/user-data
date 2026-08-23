@@ -1,0 +1,46 @@
+#cloud-config
+autoinstall:
+  version: 1
+
+  locale: en_US.UTF-8
+
+  keyboard:
+    layout: us
+    variant: ""
+
+  timezone: America/Los_Angeles
+
+  identity:
+    hostname: applied-timeclock
+    username: ubuntu
+    # Password is: ubuntu
+    # Generate a replacement with: openssl passwd -6
+    password: "$6$ubuntu$6hDGC9q2MOzoNAIiNFw7OMsPpL4ix7Q0ovZKO9i267pE6IPdnTneR5.GYGbp9xlJA7935uj8mvBRpsZZOEemZ/"
+
+  ssh:
+    install-server: true
+    allow-pw: true
+
+  storage:
+    layout:
+      name: direct
+
+  packages:
+    - openssh-server
+    - ca-certificates
+    - curl
+    - wget
+    - vim
+    - qemu-guest-agent
+    - cloud-init
+
+  updates: security
+
+  late-commands:
+    - curtin in-target --target=/target -- systemctl enable ssh
+    - curtin in-target --target=/target -- systemctl enable qemu-guest-agent
+    - curtin in-target --target=/target -- usermod -aG sudo ubuntu
+    - echo 'ubuntu ALL=(ALL) NOPASSWD:ALL' > /target/etc/sudoers.d/90-ubuntu-packer
+    - chmod 0440 /target/etc/sudoers.d/90-ubuntu-packer
+
+  shutdown: reboot

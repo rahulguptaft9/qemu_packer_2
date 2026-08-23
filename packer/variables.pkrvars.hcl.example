@@ -1,0 +1,11 @@
+# Example local values. GitHub Actions passes these as -var arguments.
+# Keep disk_size smaller than the smallest physical disk/eMMC in your Geekland device.
+
+image_name   = "applied-timeclock-ubuntu-24.04-desktop"
+disk_size    = "30000M"
+ssh_username = "ubuntu"
+ssh_password = "ubuntu"
+
+# Local example after downloading the ISO yourself:
+# iso_url      = "file:///absolute/path/to/ubuntu-24.04.4-desktop-amd64.iso"
+# iso_checksum = "sha256:<computed-from-SHA256SUMS>"
