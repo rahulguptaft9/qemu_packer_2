@@ -25,7 +25,7 @@ variable "iso_checksum" {
 
 variable "disk_size" {
   type        = string
-  description = "Disk size for the image. Ubuntu Desktop needs more space than Server; keep this smaller than the smallest physical disk/eMMC."
+  description = "Disk size for the image. Keep this smaller than the smallest physical disk/eMMC."
   default     = "30000M"
 }
 
@@ -37,20 +37,19 @@ variable "ssh_username" {
 
 variable "ssh_password" {
   type        = string
-  description = "Temporary SSH password used by Packer."
+  description = "Temporary SSH password used by Packer. Must match packer/http/user-data."
   default     = "ubuntu"
-  sensitive   = true
 }
 
 variable "efi_firmware_code" {
   type        = string
-  description = "Path to OVMF UEFI CODE firmware. Ubuntu 24.04 runners use the _4M filenames."
+  description = "Path to OVMF UEFI CODE firmware. Ubuntu GitHub runners usually use the _4M filenames."
   default     = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 }
 
 variable "efi_firmware_vars" {
   type        = string
-  description = "Path to OVMF UEFI VARS firmware. Ubuntu 24.04 runners use the _4M filenames."
+  description = "Path to OVMF UEFI VARS firmware. Ubuntu GitHub runners usually use the _4M filenames."
   default     = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 }
 
@@ -78,7 +77,7 @@ source "qemu" "ubuntu_2404_desktop" {
   efi_firmware_code = var.efi_firmware_code
   efi_firmware_vars = var.efi_firmware_vars
 
-  # path.root is the directory containing this file, i.e. ./packer.
+  # This Packer file lives in ./packer.
   # Therefore this resolves to ./packer/http.
   http_directory = "${path.root}/http"
 
@@ -90,8 +89,11 @@ source "qemu" "ubuntu_2404_desktop" {
 
   boot_wait = "5s"
 
-  # Opens the Ubuntu Desktop GRUB boot entry and appends autoinstall NoCloud-net config.
-  # If Ubuntu changes the boot menu behavior, set headless=false locally and tune this.
+  # Ubuntu Desktop GRUB edit flow:
+  # 1. Press e to edit the default boot entry.
+  # 2. Go near the linux kernel line.
+  # 3. Append autoinstall NoCloud-net config.
+  # 4. Press F10 to boot.
   boot_command = [
     "e<wait>",
     "<down><down><down><end>",
