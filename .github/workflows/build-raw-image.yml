@@ -19,16 +19,18 @@ jobs:
       IMAGE_NAME: applied-timeclock-ubuntu-24.04-desktop
       ISO_VERSION: 24.04.4
       ISO_NAME: ubuntu-24.04.4-desktop-amd64.iso
-      ISO_URL: https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-desktop-amd64.iso
-      SHA256SUMS_URL: https://releases.ubuntu.com/24.04.4/SHA256SUMS
+      ISO_SHA256: 3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e
+      ISO_URL: https://releases.ubuntu.com/releases/24.04.4/ubuntu-24.04.4-desktop-amd64.iso
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install host dependencies
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y \
             qemu-kvm \
@@ -41,15 +43,18 @@ jobs:
 
           echo "Available OVMF firmware files:"
           ls -lah /usr/share/OVMF || true
+
           test -f /usr/share/OVMF/OVMF_CODE_4M.fd
           test -f /usr/share/OVMF/OVMF_VARS_4M.fd
 
       - name: Enable KVM access on runner
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           if [ ! -e /dev/kvm ]; then
             echo "ERROR: /dev/kvm is not available on this runner."
-            echo "Use a runner with KVM support, or change accelerator from kvm to tcg for slow emulation."
+            echo "Use a runner with KVM support, or change accelerator from kvm to tcg."
             exit 1
           fi
 
@@ -65,45 +70,32 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-      
-          ISO_VERSION="24.04.4"
-          ISO_NAME="ubuntu-${ISO_VERSION}-desktop-amd64.iso"
-          RELEASE_BASE_URL="https://releases.ubuntu.com/releases/${ISO_VERSION}"
-      
+
           mkdir -p iso
-      
+
           curl -L --fail --retry 5 --retry-delay 5 \
             -o "iso/${ISO_NAME}" \
-            "${RELEASE_BASE_URL}/${ISO_NAME}"
-      
-          curl -L --fail --retry 5 --retry-delay 5 \
-            -o "iso/SHA256SUMS" \
-            "${RELEASE_BASE_URL}/SHA256SUMS"
-      
-          cd iso
-      
-          echo "Looking for checksum line for ${ISO_NAME}"
-          CHECKSUM_LINE="$(grep -F "*${ISO_NAME}" SHA256SUMS)"
-      
-          echo "${CHECKSUM_LINE}"
-      
-          echo "${CHECKSUM_LINE}" | sha256sum -c -
-      
-          ISO_SHA256="$(echo "${CHECKSUM_LINE}" | awk '{print $1}')"
+            "${ISO_URL}"
+
+          echo "${ISO_SHA256} *iso/${ISO_NAME}" | sha256sum -c -
 
       - name: Show repository structure
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           find . -maxdepth 4 -type f | sort
 
       - name: Initialize Packer
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           packer init packer/ubuntu-24.04.pkr.hcl
 
       - name: Validate Packer template
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           packer validate \
             -var "image_name=${IMAGE_NAME}" \
             -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
@@ -111,8 +103,10 @@ jobs:
             packer/ubuntu-24.04.pkr.hcl
 
       - name: Build QCOW2 image
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           PACKER_LOG=1 packer build \
             -var "image_name=${IMAGE_NAME}" \
             -var "iso_url=file://${GITHUB_WORKSPACE}/iso/${ISO_NAME}" \
@@ -120,30 +114,44 @@ jobs:
             packer/ubuntu-24.04.pkr.hcl
 
       - name: Convert QCOW2 to raw
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           mkdir -p dist
 
           QCOW2_PATH="output/${IMAGE_NAME}/${IMAGE_NAME}.qcow2"
           RAW_PATH="dist/${IMAGE_NAME}.raw"
 
           test -f "${QCOW2_PATH}"
+
           qemu-img info "${QCOW2_PATH}"
-          qemu-img convert -p -O raw "${QCOW2_PATH}" "${RAW_PATH}"
+
+          qemu-img convert \
+            -p \
+            -O raw \
+            "${QCOW2_PATH}" \
+            "${RAW_PATH}"
+
           qemu-img info "${RAW_PATH}"
 
       - name: Compress raw image
+        shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+
           RAW_PATH="dist/${IMAGE_NAME}.raw"
           COMPRESSED_PATH="${RAW_PATH}.xz"
 
           test -f "${RAW_PATH}"
+
           xz -T0 -9 -v "${RAW_PATH}"
+
           test -f "${COMPRESSED_PATH}"
 
-          ls -lh dist
           sha256sum "${COMPRESSED_PATH}" > "${COMPRESSED_PATH}.sha256"
+
+          ls -lh dist
           cat "${COMPRESSED_PATH}.sha256"
 
       - name: Upload compressed raw image artifact
