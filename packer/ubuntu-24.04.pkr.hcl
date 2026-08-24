@@ -1,116 +1,140 @@
-packer {
-  required_plugins {
-    qemu = {
-      version = ">= 1.1.6"
-      source  = "github.com/hashicorp/qemu"
-    }
-  }
-}
+name: Build Ubuntu Desktop Raw Image
 
-variable "image_name" {
-  type        = string
-  description = "Base name for the generated image."
-  default     = "applied-timeclock-ubuntu-24.04-desktop"
-}
+on:
+  workflow_dispatch:
 
-variable "iso_url" {
-  type        = string
-  description = "Ubuntu 24.04 Desktop ISO URL or local file path."
-}
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
 
-variable "iso_checksum" {
-  type        = string
-  description = "Ubuntu Desktop ISO checksum in sha256:<checksum> format."
-}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-variable "disk_size" {
-  type        = string
-  description = "Disk size for the image. Keep this smaller than the smallest physical disk/eMMC."
-  default     = "30000M"
-}
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-variable "ssh_username" {
-  type        = string
-  description = "Temporary SSH username used by Packer."
-  default     = "ubuntu"
-}
+          sudo apt-get update
+          sudo apt-get install -y \
+            qemu-kvm \
+            qemu-utils \
+            ovmf \
+            xz-utils \
+            curl \
+            ca-certificates
 
-variable "ssh_password" {
-  type        = string
-  description = "Temporary SSH password used by Packer. Must match packer/http/user-data."
-  default     = "ubuntu"
-}
+          echo "Checking KVM..."
+          ls -lah /dev/kvm
 
-variable "efi_firmware_code" {
-  type        = string
-  description = "Path to OVMF UEFI CODE firmware. Ubuntu GitHub runners usually use the _4M filenames."
-  default     = "/usr/share/OVMF/OVMF_CODE_4M.fd"
-}
+          echo "Checking OVMF firmware..."
+          ls -lah /usr/share/OVMF
+          test -f /usr/share/OVMF/OVMF_CODE_4M.fd
+          test -f /usr/share/OVMF/OVMF_VARS_4M.fd
 
-variable "efi_firmware_vars" {
-  type        = string
-  description = "Path to OVMF UEFI VARS firmware. Ubuntu GitHub runners usually use the _4M filenames."
-  default     = "/usr/share/OVMF/OVMF_VARS_4M.fd"
-}
+      - name: Enable KVM permissions
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-source "qemu" "ubuntu_2404_desktop" {
-  vm_name          = "${var.image_name}.qcow2"
-  output_directory = "output/${var.image_name}"
+          sudo usermod -aG kvm "$USER" || true
+          sudo chmod 666 /dev/kvm
 
-  iso_url      = var.iso_url
-  iso_checksum = var.iso_checksum
+      - name: Install Packer
+        uses: hashicorp/setup-packer@main
+        with:
+          version: latest
 
-  disk_size      = var.disk_size
-  format         = "qcow2"
-  accelerator    = "kvm"
-  disk_interface = "virtio"
-  net_device     = "virtio-net"
+      - name: Download Ubuntu Desktop ISO and verify checksum
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-  cpus   = 4
-  memory = 8192
+          ISO_VERSION="24.04.4"
+          ISO_NAME="ubuntu-${ISO_VERSION}-desktop-amd64.iso"
+          ISO_SHA256="3a4c9877b483ab46d7c3fbe165a0db275e1ae3cfe56a5657e5a47c2f99a99d1e"
+          RELEASE_BASE_URL="https://releases.ubuntu.com/releases/${ISO_VERSION}"
 
-  headless = true
+          mkdir -p iso
 
-  machine_type = "q35"
-  efi_boot     = true
+          curl -L --fail --retry 5 --retry-delay 5 \
+            -o "iso/${ISO_NAME}" \
+            "${RELEASE_BASE_URL}/${ISO_NAME}"
 
-  efi_firmware_code = var.efi_firmware_code
-  efi_firmware_vars = var.efi_firmware_vars
+          echo "${ISO_SHA256} *iso/${ISO_NAME}" | sha256sum -c -
 
-  # This Packer file lives in ./packer.
-  # Therefore this resolves to ./packer/http.
-  http_directory = "${path.root}/http"
+          echo "ISO_PATH=${PWD}/iso/${ISO_NAME}" >> "$GITHUB_ENV"
+          echo "ISO_CHECKSUM=sha256:${ISO_SHA256}" >> "$GITHUB_ENV"
 
-  ssh_username = var.ssh_username
-  ssh_password = var.ssh_password
-  ssh_timeout  = "120m"
+      - name: Initialize Packer
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-  shutdown_command = "echo '${var.ssh_password}' | sudo -S shutdown -P now"
+          packer init packer/ubuntu-24.04.pkr.hcl
 
-  boot_wait = "5s"
+      - name: Build QCOW2 image with Packer
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-  # Ubuntu Desktop GRUB edit flow:
-  # 1. Press e to edit the default boot entry.
-  # 2. Go near the linux kernel line.
-  # 3. Append autoinstall NoCloud-net config.
-  # 4. Press F10 to boot.
-  boot_command = [
-    "e<wait>",
-    "<down><down><down><end>",
-    " autoinstall ds=nocloud-net\\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/ ---",
-    "<f10>"
-  ]
-}
+          echo "Using ISO: ${ISO_PATH}"
+          echo "Using checksum: ${ISO_CHECKSUM}"
 
-build {
-  name    = "ubuntu-24.04-desktop"
-  sources = ["source.qemu.ubuntu_2404_desktop"]
+          packer build \
+            -var "iso_url=file://${ISO_PATH}" \
+            -var "iso_checksum=${ISO_CHECKSUM}" \
+            packer/ubuntu-24.04.pkr.hcl
 
-  provisioner "shell" {
-    scripts = [
-      "${path.root}/../scripts/10-minimal-setup.sh",
-      "${path.root}/../scripts/20-install-firstboot.sh",
-      "${path.root}/../scripts/90-cleanup.sh"
-    ]
-  }
-}
+      - name: Convert QCOW2 to raw
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          IMAGE_NAME="applied-timeclock-ubuntu-24.04-desktop"
+
+          QCOW2_PATH="output/${IMAGE_NAME}/${IMAGE_NAME}.qcow2"
+          RAW_PATH="${IMAGE_NAME}.raw"
+
+          test -f "${QCOW2_PATH}"
+
+          qemu-img info "${QCOW2_PATH}"
+
+          qemu-img convert \
+            -p \
+            -O raw \
+            "${QCOW2_PATH}" \
+            "${RAW_PATH}"
+
+          qemu-img info "${RAW_PATH}"
+
+      - name: Compress raw image
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          IMAGE_NAME="applied-timeclock-ubuntu-24.04-desktop"
+          RAW_PATH="${IMAGE_NAME}.raw"
+          COMPRESSED_PATH="${IMAGE_NAME}.raw.xz"
+
+          test -f "${RAW_PATH}"
+
+          xz -T0 -9 -v "${RAW_PATH}"
+
+          test -f "${COMPRESSED_PATH}"
+
+          sha256sum "${COMPRESSED_PATH}" > "${COMPRESSED_PATH}.sha256"
+
+          ls -lh "${COMPRESSED_PATH}" "${COMPRESSED_PATH}.sha256"
+
+      - name: Upload compressed raw image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: applied-timeclock-ubuntu-24.04-desktop-raw-xz
+          path: |
+            applied-timeclock-ubuntu-24.04-desktop.raw.xz
+            applied-timeclock-ubuntu-24.04-desktop.raw.xz.sha256
+          retention-days: 7
+          compression-level: 0
